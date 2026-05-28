@@ -20,10 +20,9 @@ package api;
 option go_package = ".;api";
 
 import "google/protobuf/timestamp.proto";
-import "k8s.io/metrics/pkg/apis/external_metrics/v1beta1/generated.proto";
 
 service MetricsService {
-    rpc GetMetrics (ScaledObjectRef) returns (k8s.io.metrics.pkg.apis.external_metrics.v1beta1.ExternalMetricValueList) {};
+    rpc GetMetrics (ScaledObjectRef) returns (ExternalMetricValueList) {};
 }
 
 service RawMetricsService {
@@ -61,4 +60,29 @@ message RawMetric {
     google.protobuf.Timestamp timestamp = 2;
     ScaledObjectRef metadata = 3;
     bool isActive = 4;
+}
+
+// ExternalMetricValueList wraps the list of values returned to the HPA controller for a single ScaledObject metric.
+//
+// Field numbers and shapes mirror k8s.io/metrics/pkg/apis/external_metrics/v1beta1.ExternalMetricValueList.
+// Field 1 is reserved for the upstream `metadata` (ListMeta) slot, which KEDA never populated; we skip it on the wire.
+message ExternalMetricValueList {
+    reserved 1;
+    reserved "metadata";
+    repeated ExternalMetricValue items = 2;
+}
+
+// ExternalMetricValue mirrors k8s.io/metrics/pkg/apis/external_metrics/v1beta1.ExternalMetricValue
+// field-for-field so the wire encoding is byte-compatible with the type KEDA used to embed directly.
+message ExternalMetricValue {
+    string metricName = 1;
+    map<string, string> metricLabels = 2;
+    google.protobuf.Timestamp timestamp = 3;
+    optional int64 window = 4;
+    Quantity value = 5;
+}
+
+// Quantity mirrors k8s.io/apimachinery/pkg/api/resource.Quantity on the wire
+message Quantity {
+    string string = 1;
 }

@@ -28,8 +28,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/keepalive"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/metrics/pkg/apis/external_metrics"
-	"k8s.io/metrics/pkg/apis/external_metrics/v1beta1"
 
 	"github.com/kedacore/keda/v2/pkg/metricsservice/api"
 	"github.com/kedacore/keda/v2/pkg/metricsservice/utils"
@@ -112,18 +113,42 @@ func (c *GrpcClient) GetMetrics(ctx context.Context, scaledObjectName, scaledObj
 		return nil, fmt.Errorf("gRPC connection is shut down")
 	}
 
-	v1beta1ExtMetrics, err := c.client.GetMetrics(ctx, &api.ScaledObjectRef{Name: scaledObjectName, Namespace: scaledObjectNamespace, MetricName: metricName})
+	resp, err := c.client.GetMetrics(ctx, &api.ScaledObjectRef{Name: scaledObjectName, Namespace: scaledObjectNamespace, MetricName: metricName})
 	if err != nil {
 		return nil, err
 	}
 
-	extMetrics := &external_metrics.ExternalMetricValueList{}
-	err = v1beta1.Convert_v1beta1_ExternalMetricValueList_To_external_metrics_ExternalMetricValueList(v1beta1ExtMetrics, extMetrics, nil)
-	if err != nil {
-		return nil, fmt.Errorf("error when converting metric values %w", err)
-	}
+	return protoToExternalMetrics(resp)
+}
 
-	return extMetrics, nil
+// protoToExternalMetrics converts the KEDA-native gRPC payload back into the upstream external_metrics list expected by the custom-metrics-apiserver.
+func protoToExternalMetrics(in *api.ExternalMetricValueList) (*external_metrics.ExternalMetricValueList, error) {
+	out := &external_metrics.ExternalMetricValueList{}
+	if in == nil {
+		return out, nil
+	}
+	out.Items = make([]external_metrics.ExternalMetricValue, 0, len(in.Items))
+	for _, pv := range in.Items {
+		if pv == nil {
+			continue
+		}
+		valueStr := pv.GetValue().GetString_()
+		q, err := resource.ParseQuantity(valueStr)
+		if err != nil {
+			return nil, fmt.Errorf("error when parsing metric value %q for %q: %w", valueStr, pv.MetricName, err)
+		}
+		item := external_metrics.ExternalMetricValue{
+			MetricName:    pv.MetricName,
+			MetricLabels:  pv.MetricLabels,
+			WindowSeconds: pv.Window,
+			Value:         q,
+		}
+		if pv.Timestamp != nil {
+			item.Timestamp = metav1.NewTime(pv.Timestamp.AsTime())
+		}
+		out.Items = append(out.Items, item)
+	}
+	return out, nil
 }
 
 // Subscribe will create a subscription on KEDA side indicating that this particular metric (identified by SO's ns, SO's name and trigger name)

@@ -25,7 +25,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"k8s.io/metrics/pkg/apis/external_metrics/v1beta1"
+	"k8s.io/metrics/pkg/apis/external_metrics"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/kedacore/keda/v2/pkg/metricscollector"
@@ -47,21 +47,17 @@ type GrpcServer struct {
 }
 
 // GetMetrics returns metrics values in form of ExternalMetricValueList for specified ScaledObject reference
-func (s *GrpcServer) GetMetrics(ctx context.Context, in *api.ScaledObjectRef) (*v1beta1.ExternalMetricValueList, error) {
-	v1beta1ExtMetrics := &v1beta1.ExternalMetricValueList{}
+func (s *GrpcServer) GetMetrics(ctx context.Context, in *api.ScaledObjectRef) (*api.ExternalMetricValueList, error) {
 	extMetrics, err := (*s.scalerHandler).GetScaledObjectMetrics(ctx, in.Name, in.Namespace, in.MetricName)
 	if err != nil {
-		return v1beta1ExtMetrics, fmt.Errorf("error when getting metric values %w", err)
+		return &api.ExternalMetricValueList{}, fmt.Errorf("error when getting metric values %w", err)
 	}
 
-	err = v1beta1.Convert_external_metrics_ExternalMetricValueList_To_v1beta1_ExternalMetricValueList(extMetrics, v1beta1ExtMetrics, nil)
-	if err != nil {
-		return v1beta1ExtMetrics, fmt.Errorf("error when converting metric values %w", err)
-	}
+	resp := externalMetricsToProto(extMetrics)
 
-	log.V(1).WithValues("scaledObjectName", in.Name, "scaledObjectNamespace", in.Namespace, "metrics", v1beta1ExtMetrics).Info("Providing metrics")
+	log.V(1).WithValues("scaledObjectName", in.Name, "scaledObjectNamespace", in.Namespace, "metrics", resp).Info("Providing metrics")
 
-	return v1beta1ExtMetrics, nil
+	return resp, nil
 }
 
 // GetRawMetricsStream opens the gRPC stream for sending metrics
@@ -206,4 +202,26 @@ func (s *GrpcServer) Start(ctx context.Context) error {
 // when this particular instance is selected/deselected as a leader.
 func (s *GrpcServer) NeedLeaderElection() bool {
 	return true
+}
+
+// externalMetricsToProto converts the in-memory external_metrics list returned by the scaler into the KEDA-native gRPC payload.
+func externalMetricsToProto(in *external_metrics.ExternalMetricValueList) *api.ExternalMetricValueList {
+	if in == nil {
+		return &api.ExternalMetricValueList{}
+	}
+	out := &api.ExternalMetricValueList{
+		Items: make([]*api.ExternalMetricValue, 0, len(in.Items)),
+	}
+	for i := range in.Items {
+		item := &in.Items[i]
+		pv := &api.ExternalMetricValue{
+			MetricName:   item.MetricName,
+			MetricLabels: item.MetricLabels,
+			Timestamp:    timestamppb.New(item.Timestamp.Time),
+			Window:       item.WindowSeconds,
+			Value:        &api.Quantity{String_: item.Value.String()},
+		}
+		out.Items = append(out.Items, pv)
+	}
+	return out
 }
